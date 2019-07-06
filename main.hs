@@ -2,16 +2,19 @@ import Text.Parsec
 import System.Environment
 
 -- gramatika
-data Document = Document [Record] deriving (Show)
-data Record = Record Leader [Field] deriving (Show)
-data Leader = Leader Code Value deriving (Show)
-data Field = Field Code [Indicator] [Subfield] deriving (Show)
-data Indicator = Indicator Char deriving (Show)
-data Subfield = Subfield Code Value deriving (Show)
+data Document = Document [Record]
+data Record = Record Leader [Field]
+data Leader = Leader Code Value
+data Field = Field Code [Indicator] [Subfield]
+data Indicator = Indicator Char
+data Subfield = Subfield Code Value
 type Value = String
 type Code = String
 
 -- shorthand za UNIMARC nevidljive znakove
+unitSeparator :: Char
+unitSeparator = '\US'
+
 rowSeparator :: Char
 rowSeparator = '\RS'
 
@@ -56,10 +59,14 @@ parseRecord = do
       fields <- many parseFieldType2 -- parsira polja za drugi tip
       char groupSeparator
       return (Record leader fields)
-    else do
-      values <- many (noneOf [groupSeparator])
-      char groupSeparator
-      return (Record leader [])
+      else if((recordMARCType:: Int) == 3) then do
+        fields <- many parseFieldType3
+        char groupSeparator
+        return (Record leader fields)
+          else do
+            fields <- many parseFieldType4And5
+            char groupSeparator
+            return (Record leader fields)
 
 
 -- funkcija za parsiranje leader-a
@@ -81,7 +88,7 @@ parseLeader = do
 -- funkcija za parsiranje field-a za prvi tip
 parseFieldType1 :: Parsec String Int Field
 parseFieldType1 = do
-  code <- count 3 digit -- parsira prve tri cifre, one predstasvljaju kod field-a
+  code <- count 3 digit -- parsira prve tri cifre, one predstavljaju kod field-a
   spaces -- jede space-ove ukoliko ih ima
   if((read code:: Int) < 10) then do -- field je kontrolnog tipa (svi manji od 010 su kontrolni), (read code:: Int) pretvara string u int
     value <- many(noneOf [rowSeparator]) -- vrednost field-a je sve dok se ne dodje do RS karaktera
@@ -118,7 +125,7 @@ parseSubfieldType1 = do
 -- funkcija za parsiranje fieldova za tip 2
 parseFieldType2 :: Parsec String Int Field
 parseFieldType2 = do
-  code <- count 3 digit -- parsira prve tri cifre, one predstasvljaju kod field-a
+  code <- count 3 digit -- parsira prve tri cifre, one predstavljaju kod field-a
   spaces -- jede space-ove ukoliko ih ima
   if((read code:: Int) < 10) then do -- field je kontrolnog tipa (svi manji od 010 su kontrolni), (read code:: Int) pretvara string u int
    value <- many(noneOf [rowSeparator]) -- vrednost field-a je sve dok se ne dodje do RS karaktera
@@ -133,9 +140,153 @@ parseFieldType2 = do
 -- funkcija za parsiranje subfield-ova
 parseSubfieldType2 :: Parsec String Int Subfield
 parseSubfieldType2 = do
-spaces -- jede moguce space-ove
-char '|' -- jede oznaku za pocetak subfield-a
-subfieldName <- anyChar -- parsira karakter koji predstavlja naziv subfield-a
-spaces -- jede moguce space-ove
-subfieldValue <- many(noneOf ['|', rowSeparator]) -- parsira vrednost subfield-a, jeduci sve karaktere dok ne dodje do sledece oznake za subfield ili do kraja field-a
-return (Subfield [subfieldName] subfieldValue) -- vraca subfield sa imenom (string duzine 1 karaktera) i vrednoscu
+  spaces -- jede moguce space-ove
+  char '|' -- jede oznaku za pocetak subfield-a
+  subfieldName <- anyChar -- parsira karakter koji predstavlja naziv subfield-a
+  spaces -- jede moguce space-ove
+  subfieldValue <- many(noneOf ['|', rowSeparator]) -- parsira vrednost subfield-a, jeduci sve karaktere dok ne dodje do sledece oznake za subfield ili do kraja field-a
+  return (Subfield [subfieldName] subfieldValue) -- vraca subfield sa imenom (string duzine 1 karaktera) i vrednoscu
+
+
+-- FUNKCIJE ZA PARSIRANJE TRECEG TIPA MARC FORMATA
+-- funkcija za parsiranje field-a za treci tip
+parseFieldType3 :: Parsec String Int Field
+parseFieldType3 = do
+  code <- count 3 digit -- parsira prve tri cifre, one predstavljaju kod field-a
+  spaces -- jede space-ove ukoliko ih ima
+  if((read code:: Int) < 10) then do -- field je kontrolnog tipa (svi manji od 010 su kontrolni), (read code:: Int) pretvara string u int
+    value <- many(noneOf [rowSeparator]) -- vrednost field-a je sve dok se ne dodje do RS karaktera
+    char rowSeparator -- jede RS karakter
+    return (Field code [] [(Subfield "" value)]) -- vraca se field sa svojim kodom, praznim indikatorima i vrednoscu koja je predstavljena kroz potpolje sa praznim kodom i parsiranom vrednoscu
+  else do -- field nije kontrolni, parsira i indikatore
+    indicators <- parseIndicatorsType3 -- parsira indikatore
+    subfields <- many parseSubfieldType1 -- parsira subfield-ove
+    char rowSeparator -- jede RS karakter koji se nalazi na kraju field-a da bi mogao uspesno da se parsira sledeci field ukoliko postoji
+    return (Field code indicators subfields) -- vraca field sa svojim kodom, indikatorima i potpoljima
+
+
+-- funkcija za parsiranje indikatora
+parseIndicatorsType3 :: Parsec String Int [Indicator] -- slicno kao i prethodne funkcije, samo sto vraca listu indikatora
+parseIndicatorsType3 = do
+  charAhead <- lookAhead anyChar
+  if(charAhead == '$') then do
+    return []
+  else do
+    firstIndicator <- anyChar -- parsira bilo koji karakter
+    secondIndicator <- anyChar -- ditto
+    return [(Indicator firstIndicator), (Indicator secondIndicator)]
+
+
+-- FUNKCIJE ZA PARSIRANJE CETVRTOG I PETOG TIPA MARC FORMATA
+parseFieldType4And5 :: Parsec String Int Field
+parseFieldType4And5 = do
+  code <- count 3 digit -- parsira prve tri cifre, one predstavljaju kod field-a
+  indicators <- parseIndicatorsType4And5 -- parsira indikatore
+  if((length indicators) > 0) then do
+    subfields <- many parseSubfieldType4
+    char rowSeparator
+    return (Field code indicators subfields)
+    else do
+    subfields <- many parseSubfieldType5 -- parsira subfield-ove
+    char rowSeparator -- jede RS karakter koji se nalazi na kraju field-a da bi mogao uspesno da se parsira sledeci field ukoliko postoji
+    return (Field code indicators subfields) -- vraca field sa svojim kodom, indikatorima i potpoljima
+
+
+-- funkcija za parsiranje indikatora
+parseIndicatorsType4And5 :: Parsec String Int [Indicator] -- slicno kao i prethodne funkcije, samo sto vraca listu indikatora
+parseIndicatorsType4And5 = do
+  spaces
+  possibleUnitSeparator <- lookAhead anyChar
+  if(possibleUnitSeparator == unitSeparator) then do
+    return []
+  else do
+    firstIndicator <- anyChar -- parsira bilo koji karakter
+    secondIndicator <- anyChar -- ditto
+    spaces
+    return [(Indicator firstIndicator), (Indicator secondIndicator)]
+
+
+parseSubfieldType4 :: Parsec String Int Subfield
+parseSubfieldType4 = do
+  try (char '[') -- jede oznaku za pocetak naziva subfield-a
+  subfieldName <- anyChar -- parsira karakter koji predstavlja naziv subfield-a
+  char ']' -- jede oznaku za kraj naziva subfield-a
+  spaces -- jede moguce space-ove
+  subfieldValue <- many(noneOf ['[', rowSeparator]) -- parsira vrednost subfield-a, jeduci sve karaktere dok ne dodje do sledece oznake za subfield ili do kraja field-a
+  return (Subfield [subfieldName] subfieldValue) -- vraca subfield sa imenom (string duzine 1 karaktera) i vrednoscu
+
+
+parseSubfieldType5 :: Parsec String Int Subfield
+parseSubfieldType5 = do
+  char unitSeparator -- jede oznaku za pocetak naziva subfield-a
+  subfieldName <- anyChar -- parsira karakter koji predstavlja naziv subfield-a
+  spaces -- jede moguce space-ove
+  subfieldValue <- many(noneOf [unitSeparator, rowSeparator]) -- parsira vrednost subfield-a, jeduci sve karaktere dok ne dodje do sledece oznake za subfield ili do kraja field-a
+  return (Subfield [subfieldName] subfieldValue) -- vraca subfield sa imenom (string duzine 1 karaktera) i vrednoscu
+
+
+
+
+-- show funkcije
+instance Show Document where
+    show (Document records) =
+                        "{\n" ++
+                        "\"records\":\n" ++ (show records) ++
+                        "\n}"
+
+instance Show Record where
+    show (Record leader fields) =
+                        "\n" ++ insertTabs 1 ++ "{\n" ++
+                        insertTabs 2 ++ "\"leader\": " ++ (show leader) ++ "\n" ++
+                        insertTabs 2 ++ "\"fields\":\n" ++
+                        insertTabs 2 ++ "[ \n" ++
+                        showFieldHelper fields ++
+                        "\n" ++ insertTabs 2 ++ "]" ++
+                        "\n" ++ insertTabs 1 ++ "}\n"
+
+instance Show Leader where
+    show (Leader code value) = "\"" ++ value ++ "\""
+
+showFieldHelper :: [Field] -> String
+showFieldHelper [] = ""
+showFieldHelper (field:restOfFields) =
+    (show field) ++ ",\n" ++ showFieldHelper restOfFields
+
+
+instance Show Field where
+    show (Field code indicators subfields) =
+      insertTabs 3 ++ "{\n" ++
+      insertTabs 4 ++ show code ++ ":\n" ++
+      insertTabs 4 ++ "{\n" ++
+      insertTabs 5 ++ "\"subfields\":\n" ++
+      insertTabs 5 ++ "[\n" ++
+      showSubFieldHelper subfields ++
+      insertTabs 5 ++ "],\n" ++
+      insertTabs 5 ++ (printIndicators indicators) ++ "\n" ++
+      insertTabs 4 ++ "}\n" ++
+      insertTabs 3 ++ "}"
+
+
+instance Show Indicator where
+  show (Indicator code) = show code
+
+instance Show Subfield where
+    show (Subfield subfieldCode subfieldContent) =
+      insertTabs 6 ++ "{\n" ++
+      insertTabs 7 ++ "\"" ++ subfieldCode ++ "\":" ++ "\"" ++ subfieldContent ++ "\"" ++ "\n" ++
+      insertTabs 6 ++ "}"
+
+
+printIndicators :: [Indicator] -> String
+printIndicators [] = ""
+printIndicators (x:y:[]) = "\"indicator_1\": " ++ (show x) ++ ",\n" ++ insertTabs 5 ++ "\"indicator_2:\" " ++ (show y)
+
+-- kako resiti trailing zarez, pattern matchuj da li je poslednji, ako jeste stavi bez zarreza
+showSubFieldHelper :: [Subfield] -> String
+showSubFieldHelper [] = ""
+showSubFieldHelper (subfield:restOfSubFields) =
+                        (show subfield) ++ ",\n" ++ showSubFieldHelper restOfSubFields
+
+insertTabs :: Int -> String
+insertTabs 0 = ""
+insertTabs c = "\t" ++ insertTabs (c - 1)
