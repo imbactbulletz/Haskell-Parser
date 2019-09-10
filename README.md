@@ -1,1 +1,1 @@
-Shitty-Haskell-Parser-2
+Haskell-Parser
